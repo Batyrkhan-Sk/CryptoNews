@@ -10,7 +10,9 @@ use jsonwebtoken::{encode, EncodingKey, Header};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use futures_util::{SinkExt, StreamExt};
-use crate::AppState;
+use crate::{AppState, api};
+use serde_json::json;
+use chrono;
 
 const JWT_SECRET: &[u8] = b"your-secret-key"; // In production, use environment variable
 
@@ -37,6 +39,19 @@ pub struct RegisterRequest {
 pub struct NewsUpdate {
     pub coin: String,
     pub news: Vec<crate::api::NewsItem>,
+}
+
+fn create_token(username: &str) -> Result<String, String> {
+    let claims = Claims {
+        sub: username.to_string(),
+        exp: (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp() as usize,
+    };
+    
+    encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(JWT_SECRET),
+    ).map_err(|e| format!("Failed to create token: {}", e))
 }
 
 pub async fn login_page() -> Html<String> {
@@ -333,33 +348,27 @@ pub async fn register_page() -> Html<String> {
 
 pub async fn handle_login(
     State(state): State<AppState>,
-    Json(login): Json<LoginRequest>,
+    Json(credentials): Json<LoginRequest>,
 ) -> impl IntoResponse {
-    match state.db.verify_user(&login.username, &login.password).await {
+    match state.db.verify_user(&credentials.username, &credentials.password).await {
         Ok(user) => {
-            let claims = Claims {
-                sub: user.username,
-                exp: (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp() as usize,
-            };
-            
-            let token = encode(
-                &Header::default(),
-                &claims,
-                &EncodingKey::from_secret(JWT_SECRET),
-            ).unwrap();
-            
-            (
-                StatusCode::OK,
-                Json(serde_json::json!({
-                    "token": token
-                }))
-            )
+            match create_token(&user.username) {
+                Ok(token) => {
+                    (StatusCode::OK, Json(json!({
+                        "token": token,
+                        "username": user.username,
+                        "email": user.email
+                    })))
+                }
+                Err(_) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": "Failed to create token"}))
+                )
+            }
         }
-        Err(e) => (
+        Err(_) => (
             StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({
-                "error": e
-            }))
+            Json(json!({"error": "Invalid credentials"}))
         )
     }
 }
@@ -369,19 +378,15 @@ pub async fn handle_register(
     Json(register): Json<RegisterRequest>,
 ) -> impl IntoResponse {
     match state.db.create_user(&register.username, &register.email, &register.password).await {
-        Ok(user) => (
+        Ok(()) => (
             StatusCode::OK,
-            Json(serde_json::json!({
-                "message": "Registration successful",
-                "user": {
-                    "username": user.username,
-                    "email": user.email
-                }
+            Json(json!({
+                "message": "Registration successful"
             }))
         ),
         Err(e) => (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
+            Json(json!({
                 "error": e
             }))
         )
@@ -389,73 +394,60 @@ pub async fn handle_register(
 }
 
 pub async fn handle_ws(
-    ws: WebSocketUpgrade,
     State(state): State<AppState>,
+    ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
     ws.on_upgrade(|socket| handle_socket(socket, state))
 }
 
-async fn handle_socket(
-    socket: WebSocket,
-    state: AppState,
-) {
+async fn handle_socket(socket: WebSocket, state: AppState) {
     let (mut sender, mut receiver) = socket.split();
-    let mut rx = state.tx.subscribe();
+    let (_tx, _rx) = broadcast::channel::<String>(100);
 
-    // Handle incoming messages
-    let mut recv_task = tokio::spawn(async move {
+    let recv_task = tokio::spawn(async move {
         while let Some(Ok(msg)) = receiver.next().await {
             if let Message::Text(text) = msg {
                 if let Ok(coin) = serde_json::from_str::<String>(&text) {
-                    if let Ok(news) = crate::api::fetch_news(&coin).await {
-                        let update = NewsUpdate {
-                            coin: coin.clone(),
-                            news: news.clone(),
-                        };
-                        let _ = state.tx.send(update);
-                        
-                        // Cache the news
-                        let cache_key = format!("news:{}", coin);
-                        let html = format_news_html(&coin, &news);
-                        let _ = state.cache.set(&cache_key, &html).await;
+                    let cache_key = format!("news:{}", coin);
+                    
+                    // Try to get from cache first
+                    if let Some(cached_html) = state.cache.get(&cache_key).await {
+                        let _ = sender.send(Message::Text(cached_html)).await;
+                        continue;
+                    }
+
+                    // If not in cache, fetch from API
+                    match api::fetch_news(&coin).await {
+                        Ok(news) => {
+                            let html = format_news_html(&coin, &news);
+                            let _ = state.cache.set(&cache_key, &html).await;
+                            let _ = sender.send(Message::Text(html)).await;
+                        }
+                        Err(e) => {
+                            tracing::error!("Error fetching news: {:?}", e);
+                            let _ = sender.send(Message::Text("Error fetching news".to_string())).await;
+                        }
                     }
                 }
             }
         }
     });
 
-    // Handle outgoing messages
-    let mut send_task = tokio::spawn(async move {
-        while let Ok(update) = rx.recv().await {
-            let msg = Message::Text(serde_json::to_string(&update).unwrap().into());
-            if sender.send(msg).await.is_err() {
-                break;
-            }
-        }
-    });
-
-    tokio::select! {
-        _ = (&mut recv_task) => send_task.abort(),
-        _ = (&mut send_task) => recv_task.abort(),
-    };
+    recv_task.await.unwrap();
 }
 
-pub fn format_news_html(coin: &str, news: &[crate::api::NewsItem]) -> String {
+pub fn format_news_html(coin: &str, news: &[api::NewsItem]) -> String {
     let news_items: String = news.iter().map(|item| {
-        let sentiment_class = if item.sentiment > 0.3 {
-            "positive"
-        } else if item.sentiment < -0.3 {
-            "negative"
-        } else {
-            "neutral"
+        let sentiment_class = match item.sentiment.as_str() {
+            "Positive" => "positive",
+            "Negative" => "negative",
+            _ => "neutral"
         };
 
-        let sentiment_emoji = if item.sentiment > 0.3 {
-            "🟢"
-        } else if item.sentiment < -0.3 {
-            "🔴"
-        } else {
-            "⚪"
+        let sentiment_emoji = match item.sentiment.as_str() {
+            "Positive" => "🟢",
+            "Negative" => "🔴",
+            _ => "⚪"
         };
 
         format!(r#"
@@ -464,7 +456,7 @@ pub fn format_news_html(coin: &str, news: &[crate::api::NewsItem]) -> String {
                 <div class="news-meta">
                     <span class="source">Source: {}</span>
                     <span class="date">Date: {}</span>
-                    <span class="sentiment {}">Sentiment: {:.2}</span>
+                    <span class="sentiment {}">Sentiment: {}</span>
                 </div>
                 <p class="summary">{}</p>
                 <a href="{}" target="_blank" class="read-more">Read more</a>
@@ -473,7 +465,7 @@ pub fn format_news_html(coin: &str, news: &[crate::api::NewsItem]) -> String {
             sentiment_emoji,
             item.title,
             item.source,
-            item.date.format("%Y-%m-%d %H:%M").to_string(),
+            item.published_at.format("%Y-%m-%d %H:%M").to_string(),
             sentiment_class,
             item.sentiment,
             item.summary,

@@ -1,153 +1,201 @@
 use reqwest;
 use serde::{Deserialize, Serialize};
-use std::env;
-use dotenv::dotenv;
 use chrono::{DateTime, Utc};
+use std::env;
+use tracing;
+use serde_json;
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct NewsItem {
     pub title: String,
     pub source: String,
     pub url: String,
-    #[serde(with = "chrono::serde::ts_seconds")]
-    pub date: DateTime<Utc>,
+    pub published_at: DateTime<Utc>,
     pub summary: String,
-    pub sentiment: f32,  // -1.0 to 1.0, where -1 is negative, 0 is neutral, 1 is positive
+    pub sentiment: String,
+    pub api_source: String,
 }
 
-// Enhanced sentiment analysis function
-fn calculate_sentiment(text: &str) -> f32 {
-    let positive_words = vec![
-        ("bullish", 0.5),
-        ("surge", 0.4),
-        ("rise", 0.3),
-        ("gain", 0.3),
-        ("growth", 0.3),
-        ("up", 0.2),
-        ("positive", 0.3),
-        ("success", 0.4),
-        ("breakthrough", 0.5),
-        ("adoption", 0.4),
-        ("partnership", 0.3),
-        ("development", 0.2),
-        ("innovation", 0.3),
-        ("upgrade", 0.3),
-        ("launch", 0.3),
-        ("milestone", 0.4),
-        ("record", 0.3),
-        ("increase", 0.3),
-        ("expansion", 0.3),
-        ("investment", 0.2)
-    ];
-    
-    let negative_words = vec![
-        ("bearish", -0.5),
-        ("crash", -0.5),
-        ("fall", -0.4),
-        ("drop", -0.4),
-        ("decline", -0.3),
-        ("down", -0.2),
-        ("negative", -0.3),
-        ("fail", -0.4),
-        ("risk", -0.3),
-        ("loss", -0.4),
-        ("concern", -0.2),
-        ("warning", -0.3),
-        ("threat", -0.4),
-        ("weak", -0.3),
-        ("ban", -0.5),
-        ("hack", -0.5),
-        ("scam", -0.5),
-        ("fraud", -0.5),
-        ("regulation", -0.2),
-        ("restriction", -0.3)
-    ];
-    
-    let text = text.to_lowercase();
-    let mut sentiment: f32 = 0.0;
-    let mut word_count = 0;
-    
-    for (word, weight) in positive_words {
-        if text.contains(word) {
-            sentiment += weight;
-            word_count += 1;
+#[derive(Debug, Serialize, Deserialize)]
+pub struct NewsDataResponse {
+    pub status: String,
+    pub results: Vec<NewsDataArticle>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct NewsDataArticle {
+    pub title: String,
+    pub link: String,
+    pub description: Option<String>,
+    #[serde(rename = "pubDate")]
+    pub pub_date: DateTime<Utc>,
+    #[serde(rename = "source_id")]
+    pub source_id: String,
+}
+
+pub async fn fetch_news(query: &str) -> Result<Vec<NewsItem>, String> {
+    match fetch_newsdata(query).await {
+        Ok(news) => {
+            tracing::info!("Successfully fetched {} news items from NewsData.io", news.len());
+            if news.is_empty() {
+                return Err("No news found for your search query.".to_string());
+            }
+            Ok(news)
+        },
+        Err(e) => {
+            tracing::error!("Failed to fetch from NewsData.io: {}", e);
+            Err(format!("Error fetching news: {}", e))
         }
-    }
-    
-    for (word, weight) in negative_words {
-        if text.contains(word) {
-            sentiment += weight;
-            word_count += 1;
-        }
-    }
-    
-    // Normalize sentiment based on word count
-    if word_count > 0 {
-        sentiment = sentiment / (word_count as f32);
-    }
-    
-    // Clamp sentiment between -1.0 and 1.0
-    if sentiment > 1.0 {
-        1.0
-    } else if sentiment < -1.0 {
-        -1.0
-    } else {
-        sentiment
     }
 }
 
-pub async fn fetch_news(coin: &str) -> Result<Vec<NewsItem>, Box<dyn std::error::Error + Send + Sync>> {
-    dotenv().ok();
+async fn fetch_newsdata(query: &str) -> Result<Vec<NewsItem>, String> {
+    let api_key = match env::var("NEWSDATA_API_KEY") {
+        Ok(key) => key,
+        Err(_) => {
+            return Err("NEWSDATA_API_KEY environment variable is not set".to_string());
+        }
+    };
     
-    let api_key = env::var("CRYPTO_NEWS_API_KEY").expect("CRYPTO_NEWS_API_KEY must be set");
-    let api_url = env::var("CRYPTO_NEWS_API_URL").expect("CRYPTO_NEWS_API_URL must be set");
+    let normalized_query = normalize_query(query);
     
-    let url = format!("{}/news?tickers={}&items=50&page=1", api_url, coin);
-    let client = reqwest::Client::new();
+    let url = format!(
+        "https://newsdata.io/api/1/news?apikey={}&q={}&language=en&size=10&category=business,technology",
+        api_key, normalized_query
+    );
     
-    let response = client
-        .get(&url)
-        .header("x-api-key", api_key)
-        .send()
-        .await?;
+    tracing::info!("Fetching from NewsData.io with query: {}", normalized_query);
+    
+    let response = reqwest::get(&url).await.map_err(|e| e.to_string())?;
+    
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.map_err(|e| e.to_string())?;
+        
+        // Special handling for invalid API key
+        if status == 401 && text.contains("The provided API key is not valid") {
+            return Err("Invalid NewsData.io API key. Please check your .env file.".to_string());
+        }
+        
+        return Err(format!("NewsData.io API returned error status {}: {}", status, text));
+    }
+    
+    let text = response.text().await.map_err(|e| e.to_string())?;
+    parse_newsdata_response(&text)
+}
 
-    let news_data: serde_json::Value = response.json().await?;
+fn parse_newsdata_response(text: &str) -> Result<Vec<NewsItem>, String> {
+    let data: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
     
-    let mut news_items = Vec::new();
-    
-    if let Some(data) = news_data.get("data") {
-        if let Some(items) = data.as_array() {
-            for item in items {
-                if let (Some(title), Some(source), Some(url), Some(date), Some(summary)) = (
-                    item.get("title").and_then(|t| t.as_str()),
-                    item.get("source").and_then(|s| s.as_str()),
-                    item.get("news_url").and_then(|u| u.as_str()),
-                    item.get("date").and_then(|d| d.as_str()),
-                    item.get("text").and_then(|t| t.as_str()),
-                ) {
-                    // Parse date
-                    let date = DateTime::parse_from_rfc3339(date)
-                        .map(|dt| dt.with_timezone(&Utc))
-                        .unwrap_or_else(|_| Utc::now());
-
-                    // Calculate sentiment using both title and summary
-                    let title_sentiment = calculate_sentiment(title);
-                    let summary_sentiment = calculate_sentiment(summary);
-                    let sentiment = (title_sentiment + summary_sentiment) / 2.0;
-
-                    news_items.push(NewsItem {
-                        title: title.to_string(),
-                        source: source.to_string(),
-                        url: url.to_string(),
-                        date,
-                        summary: summary.to_string(),
-                        sentiment,
-                    });
-                }
+    // Check for API error messages
+    if let Some(status) = data.get("status").and_then(|s| s.as_str()) {
+        if status == "error" {
+            if let Some(message) = data.get("message").and_then(|m| m.as_str()) {
+                return Err(format!("NewsData.io API error: {}", message));
             }
         }
     }
-
+    
+    let mut news_items = Vec::new();
+    
+    if let Some(results) = data.get("results").and_then(|r| r.as_array()) {
+        for item in results {
+            if let (Some(title), Some(link), Some(pub_date), Some(source_id)) = (
+                item.get("title").and_then(|t| t.as_str()),
+                item.get("link").and_then(|l| l.as_str()),
+                item.get("pubDate").and_then(|d| d.as_str()),
+                item.get("source_id").and_then(|s| s.as_str()),
+            ) {
+                let description = item.get("description")
+                    .and_then(|d| d.as_str())
+                    .unwrap_or("");
+                
+                // Try parsing with different date formats and convert to UTC
+                let published_at = if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(pub_date) {
+                    dt.with_timezone(&chrono::Utc)
+                } else if let Ok(dt) = chrono::DateTime::parse_from_rfc2822(pub_date) {
+                    dt.with_timezone(&chrono::Utc)
+                } else if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(pub_date, "%Y-%m-%d %H:%M:%S") {
+                    chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(dt, chrono::Utc)
+                } else {
+                    return Err(format!("Failed to parse date: {}", pub_date));
+                };
+                
+                let sentiment = analyze_sentiment(description);
+                
+                news_items.push(NewsItem {
+                    title: title.to_string(),
+                    url: link.to_string(),
+                    source: source_id.to_string(),
+                    published_at,
+                    summary: description.to_string(),
+                    sentiment,
+                    api_source: "NewsData.io".to_string(),
+                });
+            }
+        }
+    }
+    
+    // Sort by date (newest first)
+    news_items.sort_by(|a, b| b.published_at.cmp(&a.published_at));
+    
+    tracing::info!("Found {} news items from NewsData.io", news_items.len());
     Ok(news_items)
+}
+
+fn normalize_query(query: &str) -> String {
+    let query = query.trim().to_lowercase();
+    
+    // Map common abbreviations to full names
+    let query = match query.as_str() {
+        "btc" => "bitcoin",
+        "eth" | "ether" => "ethereum",
+        "xrp" => "ripple",
+        "ltc" => "litecoin",
+        "doge" => "dogecoin",
+        "ada" => "cardano",
+        "dot" => "polkadot",
+        "sol" => "solana",
+        "link" => "chainlink",
+        "uni" => "uniswap",
+        _ => {
+            // Try to match by removing any whitespace
+            let normalized = query.replace(" ", "");
+            match normalized.as_str() {
+                "btc" => "bitcoin",
+                "eth" | "ether" => "ethereum",
+                "xrp" => "ripple",
+                "ltc" => "litecoin",
+                "doge" => "dogecoin",
+                "ada" => "cardano",
+                "dot" => "polkadot",
+                "sol" => "solana",
+                "link" => "chainlink",
+                "uni" => "uniswap",
+                _ => &query,
+            }
+        }
+    };
+    
+    // Add "cryptocurrency" to the query to improve results
+    format!("{} cryptocurrency", query)
+}
+
+fn analyze_sentiment(text: &str) -> String {
+    // Simple sentiment analysis based on keyword matching
+    let text = text.to_lowercase();
+    let positive_words = ["bullish", "surge", "gain", "rise", "growth", "positive", "up", "high"];
+    let negative_words = ["bearish", "crash", "drop", "fall", "decline", "negative", "down", "low"];
+
+    let positive_count = positive_words.iter().filter(|word| text.contains(*word)).count();
+    let negative_count = negative_words.iter().filter(|word| text.contains(*word)).count();
+
+    if positive_count > negative_count {
+        "Positive".to_string()
+    } else if negative_count > positive_count {
+        "Negative".to_string()
+    } else {
+        "Neutral".to_string()
+    }
 }
 
