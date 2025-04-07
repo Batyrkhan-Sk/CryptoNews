@@ -38,9 +38,9 @@ The Cryptocurrency News Aggregator is a Rust-based web service that collects and
 ## Installation
 1. Clone the repository:
    ```
-   git clone https://github.com/yourusername/crypto-news-aggregator.git
+   git clone https://github.com/Batyrkhan-Sk/CryptoNews
    ```
-2. Navigate to the project directory:
+2. Navigate to the project directory (Example of dir):
    ```
    cd crypto-news-aggregator
    ```
@@ -59,4 +59,4 @@ The Cryptocurrency News Aggregator is a Rust-based web service that collects and
 
 ## Examples
 - Searching for "Bitcoin" will display the latest news articles related to Bitcoin.
-- Searching for "ETH" will show news articles related to Ethereum.
+- Searching for "ether" will show news articles related to Ethereum.
