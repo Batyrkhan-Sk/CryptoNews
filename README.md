@@ -17,12 +17,30 @@ The Cryptocurrency News Aggregator is a Rust-based web service that collects and
 - **Data Sources**: CryptQNews API, CoinGecko API
 - **Caching & Storage**: Redis, SQLite, PostgreSQL (optional)
 
+## Demonstation of Work
+
+1. Main page without login/registration
+<img width="1440" alt="Screenshot 2025-04-07 at 13 13 23" src="https://github.com/user-attachments/assets/82dd1ec1-b0f0-40e3-b87b-3c3d013791b1" />
+
+2. Registration page
+<img width="1440" alt="Screenshot 2025-04-07 at 13 13 48" src="https://github.com/user-attachments/assets/05177e7e-b6c7-45d4-8acd-d71831fa1080" />
+
+3. Login page
+<img width="1440" alt="Screenshot 2025-04-07 at 13 13 57" src="https://github.com/user-attachments/assets/c10b8b6d-ff20-41fc-bae1-96bc729018af" />
+
+4. Main page with auth and filled search (Ex. Bitcoin)
+<img width="1440" alt="Screenshot 2025-04-07 at 13 14 14" src="https://github.com/user-attachments/assets/2143477c-08f1-4c9e-b617-8b1a6d25f5c5" />
+
+5. Bitcoin results
+<img width="1440" alt="Screenshot 2025-04-07 at 13 14 20" src="https://github.com/user-attachments/assets/b074d702-54af-40bc-98e5-a8f7d9902c3d" />
+
+
 ## Installation
 1. Clone the repository:
    ```
-   git clone https://github.com/yourusername/crypto-news-aggregator.git
+   git clone https://github.com/Batyrkhan-Sk/CryptoNews
    ```
-2. Navigate to the project directory:
+2. Navigate to the project directory (Example of dir):
    ```
    cd crypto-news-aggregator
    ```
@@ -41,4 +59,4 @@ The Cryptocurrency News Aggregator is a Rust-based web service that collects and
 
 ## Examples
 - Searching for "Bitcoin" will display the latest news articles related to Bitcoin.
-- Searching for "ETH" will show news articles related to Ethereum.
+- Searching for "ether" will show news articles related to Ethereum.
