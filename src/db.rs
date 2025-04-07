@@ -12,7 +12,6 @@ pub struct Database {
 
 impl Database {
     pub async fn new() -> Result<Self, sqlx::Error> {
-        // Ensure the data directory exists
         let data_dir = Path::new("data");
         if !data_dir.exists() {
             fs::create_dir_all(data_dir).expect("Failed to create data directory");

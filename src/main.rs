@@ -31,7 +31,6 @@ pub struct AppState {
 
 #[tokio::main]
 async fn main() {
-    // Initialize tracing
     tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::new(
             std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()),
