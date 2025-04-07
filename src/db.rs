@@ -17,20 +17,17 @@ impl Database {
         if !data_dir.exists() {
             fs::create_dir_all(data_dir).expect("Failed to create data directory");
         }
-        
-        // Create the database file if it doesn't exist
+
         let db_path = data_dir.join("users.db");
         if !db_path.exists() {
             fs::File::create(&db_path).expect("Failed to create database file");
         }
-        
-        // Connect to the database
+
         let database_url = format!("sqlite:{}", db_path.display());
         println!("Connecting to database at: {}", database_url);
         
         let pool = SqlitePool::connect(&database_url).await?;
-        
-        // Create the users table if it doesn't exist
+
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS users (
@@ -43,8 +40,7 @@ impl Database {
         )
         .execute(&pool)
         .await?;
-        
-        // Create the news_items table if it doesn't exist
+
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS news_items (
@@ -65,11 +61,9 @@ impl Database {
     }
     
     pub async fn create_user(&self, username: &str, email: &str, password: &str) -> Result<(), String> {
-        // Hash the password
         let password_hash = hash(password.as_bytes(), DEFAULT_COST)
             .map_err(|e| format!("Failed to hash password: {}", e))?;
         
-        // Insert the user into the database
         sqlx::query(
             r#"
             INSERT INTO users (username, email, password_hash)

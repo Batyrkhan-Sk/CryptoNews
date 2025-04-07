@@ -1,6 +1,6 @@
-mod api;  // Declare the api module
-mod routes;  // Declare the routes module
-mod cache;  // Add this line
+mod api; 
+mod routes; 
+mod cache; 
 mod auth;
 mod db;
 
